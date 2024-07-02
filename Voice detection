@@ -1,0 +1,92 @@
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
+import librosa
+
+# Function to extract features from audio data using MFCC
+def extract_features(audio_data, sample_rate, mfcc=True, chroma=True, mel=True):
+    features = []
+    if chroma:
+        chroma = np.mean(librosa.feature.chroma_stft(y=audio_data, sr=sample_rate).T, axis=0)
+        features.append(chroma)
+    if mel:
+        mel = np.mean(librosa.feature.melspectrogram(y=audio_data, sr=sample_rate).T, axis=0)
+        features.append(mel)
+    if mfcc:
+        mfcc = np.mean(librosa.feature.mfcc(y=audio_data, sr=sample_rate, n_mfcc=40).T, axis=0)
+        features.append(mfcc)
+    return np.hstack(features)
+
+# Generator function to load and preprocess data in batches
+def data_generator(file_paths, labels, batch_size, sample_rate):
+    while True:
+        for i in range(0, len(file_paths), batch_size):
+            batch_files = file_paths[i:i + batch_size]
+            batch_labels = labels[i:i + batch_size]
+            batch_features = []
+
+            for file_path in batch_files:
+                audio_data, _ = librosa.load(file_path, sr=sample_rate)
+                features = extract_features(audio_data, sample_rate)
+                batch_features.append(features)
+
+            yield np.vstack(batch_features), np.array(batch_labels)
+
+# Create and compile the CNN model
+def create_model(input_shape):
+    model = models.Sequential([
+        layers.Input(shape=input_shape),
+        layers.Reshape((input_shape[0], 1)),
+        layers.Conv1D(32, 5, activation='relu'),
+        layers.Conv1D(64, 5, activation='relu'),
+        layers.MaxPooling1D(4),
+        layers.Dropout(0.2),
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dropout(0.3),
+        layers.Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# Train the model
+def train_model(data_path, batch_size=10, epochs=10, test_size=0.2):
+    # Load file paths and labels
+    positive_dir = os.path.join(data_path, 'real')
+    negative_dir = os.path.join(data_path, 'fake')
+    positive_files = [os.path.join(positive_dir, f) for f in os.listdir(positive_dir) if f.endswith('.mp3')]
+    negative_files = [os.path.join(negative_dir, f) for f in os.listdir(negative_dir) if f.endswith('.mp3')]
+
+    all_files = positive_files + negative_files
+    labels = [1] * len(positive_files) + [0] * len(negative_files)
+
+    # Split data into train and test sets
+    train_files, test_files, train_labels, test_labels = train_test_split(all_files, labels, test_size=test_size, random_state=42)
+
+    # Parameters
+    sample_rate = 22050  # Example sample rate, adjust as needed
+    input_shape = extract_features(np.zeros(1), sample_rate).shape
+
+    # Create data generators
+    train_gen = data_generator(train_files, train_labels, batch_size, sample_rate)
+    test_gen = data_generator(test_files, test_labels, batch_size, sample_rate)
+
+    # Create and compile model
+    model = create_model(input_shape)
+
+    # Train model with early stopping
+    early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_accuracy', patience=3, restore_best_weights=True)
+    model.fit(train_gen, epochs=epochs, steps_per_epoch=len(train_files) // batch_size,
+              validation_data=test_gen, validation_steps=len(test_files) // batch_size,
+              callbacks=[early_stopping])
+    
+
+    # Evaluate the model
+    test_loss, test_accuracy = model.evaluate(test_gen, steps=len(test_files) // batch_size)
+    print(f'Test Accuracy: {test_accuracy * 100:.2f}%')
+
+if __name__ == '__main__':
+    data_path = r'D:\DEMONSTRATION\DEMONSTRATION'
+    train_model(data_path, batch_size=10, epochs=10, test_size=0.2)
